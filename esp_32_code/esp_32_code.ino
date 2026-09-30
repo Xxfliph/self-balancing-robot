@@ -19,6 +19,15 @@ unsigned long last_loop_time = 0;
 unsigned long current_time;
 double olderror = 0;
 
+int AIN1 = 25;
+int AIN2 = 26;
+int PWMA = 18;
+
+int BIN1 = 32;
+int BIN2 = 33;
+int PWMB = 19;
+
+
 void setup(void) {
   Serial.begin(115200);
   while (!Serial)
@@ -52,10 +61,17 @@ lower Hz = more smoothing but slower to respond to changes. Higher Hz = less smo
 */
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); // or 44_HZ
 
-  oldtime = micros();
   
-  Serial.println("");
-  delay(100);
+  
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(PWMA, OUTPUT);
+
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+
+  oldtime = micros();   
 }
 
 double integral_sum = 0;
@@ -79,11 +95,11 @@ void loop() {
   double setpoint = 0.0;
   double error;
   double P = 0.0;
-  double K_p = 1; //will need to adjust these based on behaviour
+  double K_p = 10; //will need to adjust these based on behaviour
   double D = 0.0;
-  double K_d = 1; //will need to adjust these based on behaviour
+  double K_d = 0.7; //will need to adjust these based on behaviour
   double I = 0.0;
-  double K_i = 1;//will need to adjust these based on behaviour
+  double K_i = 0.0;//will need to adjust these based on behaviour
 
   current_time = micros();
   if (current_time - last_loop_time >= loop_period) {
@@ -94,11 +110,14 @@ void loop() {
 
     newtime = current_time;
     deltatime = (double)(newtime - oldtime)/1000000.0;
+    if (deltatime <= 0) {
+      deltatime = 0.01;
+    }
     oldtime = newtime;
 
     double gyro_reading = g.gyro.y*(180.0/M_PI);
 
-    angle_accel = atan2(a.acceleration.x, a.acceleration.z)*(180.0/M_PI);
+    angle_accel = atan2(a.acceleration.x, -a.acceleration.z)*(180.0/M_PI); //put negative sign before z acceleration to invert it becasue mpu is upside down in the robot. Not tested yet, so may need to fix other parts if this doenst work.
     newangle = (0.98*(oldangle+gyro_reading*deltatime) + 0.02*angle_accel);
     oldangle = newangle;
   
@@ -117,12 +136,77 @@ void loop() {
 
     pid_output = constrain(pid_output, -255.0, 255.0);
 
-    Serial.print("angle: ");
-    Serial.println(newangle);
-    Serial.println("");
-    Serial.print("PID: ");
-    Serial.println(pid_output);
-    Serial.println("");
+    if (abs(error) < 1.0) {
+      integral_sum = 0; // Clear stored memory when near setpoint
+    }
+
+    int motor_speed = (int)abs(pid_output);
+    if (motor_speed > 0) {
+      motor_speed = map(motor_speed, 1,255, 50, 255);
+    }
+
+    if (abs(newangle) > 45.0) {
+      digitalWrite(AIN1, LOW);
+      digitalWrite(AIN2, LOW);
+      digitalWrite(BIN1, LOW);
+      digitalWrite(BIN2, LOW);
+      analogWrite(PWMA, 0);
+      analogWrite(PWMB, 0);
+
+      integral_sum = 0;
+    }
+    else {
+      if (pid_output < 0) {
+        digitalWrite(AIN1, HIGH);
+        digitalWrite(AIN2, LOW);
+        digitalWrite (BIN1, HIGH);
+        digitalWrite(BIN2, LOW);
+
+        analogWrite(PWMA, motor_speed);
+        analogWrite(PWMB, motor_speed);
+      }
+      else if (pid_output > 0) {
+        digitalWrite(AIN1, LOW);
+        digitalWrite(AIN2, HIGH);
+        digitalWrite(BIN1, LOW);
+        digitalWrite(BIN2, HIGH);
+
+        analogWrite(PWMA, motor_speed);
+        analogWrite(PWMB, motor_speed);
+      }
+      else {
+        digitalWrite(AIN1, LOW);
+        digitalWrite(AIN2, LOW);
+        digitalWrite(BIN1, LOW);
+        digitalWrite(BIN2, LOW);
+
+        analogWrite(PWMA, 0);
+        analogWrite(PWMB, 0);
+
+      }
+    }
+
+
+
+    
+
+    /*
+    int AIN1 = 25;
+    int AIN2 = 26;
+    int PWMA = 18;
+
+    int BIN1 = 32;
+    int BIN2 = 33;
+    int PWMB = 19;
+
+    */
+
+    Serial.print("Angle: ");
+    Serial.print(newangle);
+    Serial.print(" | PID: ");
+    Serial.print(pid_output);
+    Serial.print(" | PWM: ");
+    Serial.println(motor_speed);
   }
 
 
@@ -131,3 +215,4 @@ void loop() {
 
   
 }
+
