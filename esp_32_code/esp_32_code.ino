@@ -2,10 +2,7 @@
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
 
-/*
-General idea: intilaize the acceleratmoer, range, and filterbandwith and set their range which dpends on what ur using the mpu 6050 for.
-THen create variables for each measuermnt "event" (a, g, temp) and then access the data stored in them using "." and then print it out
-*/
+
 
 Adafruit_MPU6050 mpu;
 
@@ -18,6 +15,9 @@ const unsigned long loop_period = 10000;
 unsigned long last_loop_time = 0;
 unsigned long current_time;
 double olderror = 0;
+double gyro_bias = 0;
+
+//SDA goes to GPIO 21 and SCL goes to GPIO 22 by default
 
 int AIN1 = 25;
 int AIN2 = 26;
@@ -35,7 +35,7 @@ void setup(void) {
 
   Serial.println("Adafruit MPU6050 test");
 
-  // Try to initialize!
+
   if (!mpu.begin()) {
     Serial.println("Failed to find MPU6050 chip");
     while (1) {
@@ -44,13 +44,7 @@ void setup(void) {
   }
   Serial.println("MPU6050 Found");
 
-/*
-This block of code sets the mpu acceloromter range, which the user sets to +-8G. 
-Instead of harcoding the user inputted range, the code actually checks what hte range 
-is by using the switch, case, break chain. The value to be tested is mpu.getaccelerometer range. 
-If its in the rnage 2_G (the first case tests for) then print 2_G, break out of the logic 
-chain then go to next block of code. same idea for 4, 8 and 16. Same idea for setgyroscope and filter bandwith
-*/
+
 
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
@@ -59,7 +53,7 @@ chain then go to next block of code. same idea for 4, 8 and 16. Same idea for se
 Filter bandwith is used to smooth out noise (fast small fluctuations  in raw sensor readings, vibrations, electrical interference)
 lower Hz = more smoothing but slower to respond to changes. Higher Hz = less smoothing (noisier) but more responsive to changes
 */
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); // or 44_HZ
+  mpu.setFilterBandwidth(MPU6050_BAND_94_HZ); // or 44_HZ
 
   
   
@@ -71,35 +65,36 @@ lower Hz = more smoothing but slower to respond to changes. Higher Hz = less smo
   pinMode(BIN2, OUTPUT);
   pinMode(PWMB, OUTPUT);
 
+  analogWriteFrequency(PWMA, 20000);
+  analogWriteFrequency(PWMB, 20000);
+
+  double gyro_sum = 0;
+  for (int i = 0; i < 500; i++) {
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+    gyro_sum += g.gyro.y;
+    delay(3);
+  }
+  gyro_bias = gyro_sum / 500.0;
+
   oldtime = micros();   
 }
 
 double integral_sum = 0;
 
 void loop() {
-  /* Get new sensor events with the readings 
-    a, g and temp are variables of type "sensors_event_t". That condensed line is the same as this:
-    sensors_event_t a;
-    sensors_event_t g;
-    sensors_event_t temp;
-
-    a, g and temp are sort of like python objects, where you use "." to access attributes. They are actually "structs"
-    in the c++ language which is like python object but only with attributes and no functions.
-
-    Then use "." to access the data stored in a, g and temp. So a.acceleration.x gets the x acceleration
-  */
   
   double angle_accel;
   double angle_gyro;
   double deltatime;
-  double setpoint = 0.0;
+  double setpoint = 2.9; //if you want it to lean negative, decrease. if you want it to lean positive, increase
   double error;
   double P = 0.0;
-  double K_p = 10; //will need to adjust these based on behaviour
+  double K_p = 63; //will need to adjust these based on behaviour
   double D = 0.0;
-  double K_d = 0.7; //will need to adjust these based on behaviour
+  double K_d = 1.3; //will need to adjust these based on behaviour
   double I = 0.0;
-  double K_i = 0.0;//will need to adjust these based on behaviour
+  double K_i = 8.0;//will need to adjust these based on behaviour
 
   current_time = micros();
   if (current_time - last_loop_time >= loop_period) {
@@ -115,9 +110,9 @@ void loop() {
     }
     oldtime = newtime;
 
-    double gyro_reading = g.gyro.y*(180.0/M_PI);
+    double gyro_reading = (g.gyro.y - gyro_bias)*(180.0/M_PI);
 
-    angle_accel = atan2(a.acceleration.x, -a.acceleration.z)*(180.0/M_PI); //put negative sign before z acceleration to invert it becasue mpu is upside down in the robot. Not tested yet, so may need to fix other parts if this doenst work.
+    angle_accel = atan2(a.acceleration.x, -a.acceleration.z)*(180.0/M_PI); //put negative sign before z acceleration to invert it becasue mpu is upside down.
     newangle = (0.98*(oldangle+gyro_reading*deltatime) + 0.02*angle_accel);
     oldangle = newangle;
   
@@ -125,24 +120,26 @@ void loop() {
     error = setpoint - newangle;
     P = K_p*error;
 
-    D = K_d*((error - olderror)/deltatime);
+    static double gyro_filtered = 0;
+    gyro_filtered = 0.7*gyro_filtered + 0.3*gyro_reading;
+    D = -K_d*gyro_filtered;
     olderror = error;
 
     integral_sum += error*deltatime;
-    integral_sum = constrain(integral_sum, -100.0, 100.0); // can change the -100 100 clamping values according to behaviour. range = pwm/K_i (255/K-i)
+    integral_sum = constrain(integral_sum, -5.0, 5.0); // can change the -100 100 clamping values according to behaviour. range = pwm/K_i (255/K-i)
     I = K_i*integral_sum;
 
     double pid_output = P + I + D;
 
     pid_output = constrain(pid_output, -255.0, 255.0);
 
-    if (abs(error) < 1.0) {
-      integral_sum = 0; // Clear stored memory when near setpoint
-    }
+ 
 
     int motor_speed = (int)abs(pid_output);
-    if (motor_speed > 0) {
-      motor_speed = map(motor_speed, 1,255, 50, 255);
+    if (motor_speed < 8) {
+      motor_speed = 0;
+    } else {
+      motor_speed = map(motor_speed, 8, 255, 35, 255);
     }
 
     if (abs(newangle) > 45.0) {
@@ -157,19 +154,19 @@ void loop() {
     }
     else {
       if (pid_output < 0) {
-        digitalWrite(AIN1, HIGH);
-        digitalWrite(AIN2, LOW);
-        digitalWrite (BIN1, HIGH);
-        digitalWrite(BIN2, LOW);
+        digitalWrite(AIN1, LOW);
+        digitalWrite(AIN2, HIGH);
+        digitalWrite(BIN1, LOW);
+        digitalWrite(BIN2, HIGH);
 
         analogWrite(PWMA, motor_speed);
         analogWrite(PWMB, motor_speed);
       }
       else if (pid_output > 0) {
-        digitalWrite(AIN1, LOW);
-        digitalWrite(AIN2, HIGH);
-        digitalWrite(BIN1, LOW);
-        digitalWrite(BIN2, HIGH);
+        digitalWrite(AIN1, HIGH);
+        digitalWrite(AIN2, LOW);
+        digitalWrite(BIN1, HIGH);
+        digitalWrite(BIN2, LOW);
 
         analogWrite(PWMA, motor_speed);
         analogWrite(PWMB, motor_speed);
@@ -200,13 +197,16 @@ void loop() {
     int PWMB = 19;
 
     */
-
-    Serial.print("Angle: ");
-    Serial.print(newangle);
+    /*
+    Serial.println("Angle: ");
+    
+    Serial.println(newangle);
+    
     Serial.print(" | PID: ");
     Serial.print(pid_output);
     Serial.print(" | PWM: ");
     Serial.println(motor_speed);
+    */
   }
 
 
