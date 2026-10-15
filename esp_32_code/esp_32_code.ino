@@ -23,19 +23,14 @@ long lastCountA = 0;
 long lastCountB = 0;
 double wheel_speed = 0;
 double speed_lean = 0;
-const double K_SPEED = 0.06;
+const double K_SPEED = 0.08;
 double speed_integral = 0;
 double pos_hold = 0;
-const double K_POS = 0.01;
+const double K_POS = 0.005;
 const double KI_SPEED = 0.002;
 
-double olderror = 0;
 double gyro_bias = 0;
 
-
-const double LEAN_ANGLE = 2.0;
-double lean_target = 0;
-double lean_now = 0;
 double speed_target = 0;
 const double TARGET_SPEED = 30;
 double speed_cmd = 0;
@@ -44,6 +39,11 @@ const double LEAN_I_MAX = 2.5;
 const int MIN_PWM = 25;
 const double DEAD_BAND = 13;
 
+double turn_target = 0;
+double turn_now = 0;
+const double TURN_SPEED = 40;
+const double TURN_RAMP = 4;
+
 class CmdCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) {
     auto v = c->getValue();
@@ -51,12 +51,15 @@ class CmdCallbacks : public BLECharacteristicCallbacks {
       char cmd = v[i];
       if (cmd == 'F' || cmd == 'f') {
         speed_target = -TARGET_SPEED;
-      }
-      else if (cmd == 'B' || cmd == 'b') {
+      } else if (cmd == 'B' || cmd == 'b') {
         speed_target = TARGET_SPEED;
-      }
-      else if (cmd == 'S' || cmd == 's') {
+      } else if (cmd == 'L' || cmd == 'l') {
+        turn_target = TURN_SPEED;
+      } else if (cmd == 'R' || cmd == 'r') {
+        turn_target = -TURN_SPEED;
+      } else if (cmd == 'S' || cmd == 's') {
         speed_target = 0;
+        turn_target = 0;
       }
     }
   }
@@ -65,6 +68,7 @@ class CmdCallbacks : public BLECharacteristicCallbacks {
 class ServerCallbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer *s) {
     speed_target = 0;
+    turn_target = 0;
     BLEDevice::startAdvertising();
   }
 };
@@ -88,8 +92,7 @@ volatile int pulseCountB = 0;
 void IRAM_ATTR onEncoderPulseA() {
   if (digitalRead(encoderAB) == LOW) {
     pulseCountA++;
-  }
-  else {
+  } else {
     pulseCountA--;
   }
 }
@@ -97,13 +100,26 @@ void IRAM_ATTR onEncoderPulseA() {
 void IRAM_ATTR onEncoderPulseB() {
   if (digitalRead(encoderBB) == LOW) {
     pulseCountB++;
-  }
-  else {
+  } else {
     pulseCountB--;
   }
 }
 
-
+// pwm ranges from -255 to 255. The sign is direction, the size is speed.
+void setMotor(int in1, int in2, int pwmPin, int pwm) {
+  pwm = constrain(pwm, -255, 255);
+  if (pwm > 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  } else if (pwm < 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+  } else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+  analogWrite(pwmPin, abs(pwm));
+}
 
 void setup(void) {
   Serial.begin(115200);
@@ -126,14 +142,14 @@ void setup(void) {
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
 
-/*
+  /*
 Filter bandwith is used to smooth out noise (fast small fluctuations  in raw sensor readings, vibrations, electrical interference)
 lower Hz = more smoothing but slower to respond to changes. Higher Hz = less smoothing (noisier) but more responsive to changes
 */
-  mpu.setFilterBandwidth(MPU6050_BAND_44_HZ); // or 44_HZ
+  mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);  // or 44_HZ
 
-  
-  
+
+
   pinMode(AIN1, OUTPUT);
   pinMode(AIN2, OUTPUT);
   pinMode(PWMA, OUTPUT);
@@ -151,7 +167,7 @@ lower Hz = more smoothing but slower to respond to changes. Higher Hz = less smo
   pinMode(encoderBB, INPUT_PULLUP);
 
   attachInterrupt(digitalPinToInterrupt(encoderAA), onEncoderPulseA, RISING);
-  attachInterrupt(digitalPinToInterrupt(encoderBA), onEncoderPulseB, FALLING);  
+  attachInterrupt(digitalPinToInterrupt(encoderBA), onEncoderPulseB, FALLING);
 
   BLEDevice::init("balancebot");
   BLEServer *server = BLEDevice::createServer();
@@ -174,7 +190,7 @@ lower Hz = more smoothing but slower to respond to changes. Higher Hz = less smo
   }
   gyro_bias = gyro_sum / 500.0;
 
-  oldtime = micros();   
+  oldtime = micros();
 }
 
 double integral_sum = 0;
@@ -182,16 +198,15 @@ double integral_sum = 0;
 void loop() {
 
   double angle_accel;
-  double angle_gyro;
   double deltatime;
-  double setpoint = 2.65; //if you want it to lean negative, decrease. if you want it to lean positive, increase
+  double setpoint = 3.0;  //if you want it to lean negative, decrease. if you want it to lean positive, increase
   double error;
   double P = 0.0;
-  double K_p = 58; //will need to adjust these based on behaviour
+  double K_p = 58;  //will need to adjust these based on behaviour
   double D = 0.0;
-  double K_d = 2.2; //will need to adjust these based on behaviour
+  double K_d = 2.2;  //will need to adjust these based on behaviour
   double I = 0.0;
-  double K_i = 0.0;//will need to adjust these based on behaviour
+  double K_i = 0.0;  //After testing I decided integral term wasn't necessary.
 
 
 
@@ -204,32 +219,31 @@ void loop() {
     mpu.getEvent(&a, &g, &temp);
 
     newtime = current_time;
-    deltatime = (double)(newtime - oldtime)/1000000.0;
+    deltatime = (double)(newtime - oldtime) / 1000000.0;
     if (deltatime <= 0) {
       deltatime = 0.01;
     }
     oldtime = newtime;
 
-    double gyro_reading = (g.gyro.y - gyro_bias)*(180.0/M_PI);
+    double gyro_reading = (g.gyro.y - gyro_bias) * (180.0 / M_PI);
 
-    angle_accel = atan2(a.acceleration.x, -a.acceleration.z)*(180.0/M_PI); //put negative sign before z acceleration to invert it becasue mpu is upside down.
-    newangle = (0.98*(oldangle+gyro_reading*deltatime) + 0.02*angle_accel);
+    angle_accel = atan2(a.acceleration.x, -a.acceleration.z) * (180.0 / M_PI);  //put negative sign before z acceleration to invert it becasue mpu is upside down.
+    newangle = (0.98 * (oldangle + gyro_reading * deltatime) + 0.02 * angle_accel);
     oldangle = newangle;
-  
 
-    lean_now += constrain(lean_target - lean_now, -0.05, 0.05);
-    error = (setpoint + lean_now + speed_lean) - newangle;
+    error = (setpoint + speed_lean) - newangle;
 
-    P = K_p*error;
+    P = K_p * error;
 
     static double gyro_filtered = 0;
-    gyro_filtered = 0.5*gyro_filtered + 0.5*gyro_reading;
-    D = -K_d*gyro_filtered;
-    olderror = error;
+    gyro_filtered = 0.5 * gyro_filtered + 0.5 * gyro_reading;
+    D = -K_d * gyro_filtered;
 
-    integral_sum += error*deltatime;
-    integral_sum = constrain(integral_sum, -5.0, 5.0); // can change the -100 100 clamping values according to behaviour. range = pwm/K_i (255/K-i)
-    I = K_i*integral_sum;
+
+
+    integral_sum += error * deltatime;
+    integral_sum = constrain(integral_sum, -5.0, 5.0);  // can change the -100 100 clamping values according to behaviour. range = pwm/K_i (255/K-i)
+    I = K_i * integral_sum;
 
     double pid_output = P + I + D;
 
@@ -245,49 +259,27 @@ void loop() {
       motor_speed = MIN_PWM + (int)((mag - DEAD_BAND) * (255 - MIN_PWM) / (255.0 - DEAD_BAND));
     }
 
-    if (abs(newangle) > 45.0) {
-      digitalWrite(AIN1, LOW);
-      digitalWrite(AIN2, LOW);
-      digitalWrite(BIN1, LOW);
-      digitalWrite(BIN2, LOW);
-      analogWrite(PWMA, 0);
-      analogWrite(PWMB, 0);
+    int signed_speed;
+    if (pid_output >= 0) {
+      signed_speed = motor_speed;
+    } else {
+      signed_speed = -motor_speed;
+    }
 
+    turn_now += constrain(turn_target - turn_now, -TURN_RAMP, TURN_RAMP);
+    if (abs(newangle) > 45.0) {
+      setMotor(AIN1, AIN2, PWMA, 0);
+      setMotor(BIN1, BIN2, PWMB, 0);
       integral_sum = 0;
       speed_integral = 0;
+      pos_hold = (pulseCountA + pulseCountB) / 2.0;
+    } else {
+      setMotor(AIN1, AIN2, PWMA, signed_speed + (int)turn_now);
+      setMotor(BIN1, BIN2, PWMB, signed_speed - (int)turn_now);
     }
-    else {
-      if (pid_output < 0) {
-        digitalWrite(AIN1, LOW);
-        digitalWrite(AIN2, HIGH);
-        digitalWrite(BIN1, LOW);
-        digitalWrite(BIN2, HIGH);
-
-        analogWrite(PWMA, motor_speed);
-        analogWrite(PWMB, motor_speed);
-      }
-      else if (pid_output > 0) {
-        digitalWrite(AIN1, HIGH);
-        digitalWrite(AIN2, LOW);
-        digitalWrite(BIN1, HIGH);
-        digitalWrite(BIN2, LOW);
-
-        analogWrite(PWMA, motor_speed);
-        analogWrite(PWMB, motor_speed);
-      }
-      else {
-        digitalWrite(AIN1, LOW);
-        digitalWrite(AIN2, LOW);
-        digitalWrite(BIN1, LOW);
-        digitalWrite(BIN2, LOW);
-
-        analogWrite(PWMA, 0);
-        analogWrite(PWMB, 0);
-
-      }
 
 
-    }
+
     if (current_time - speed_last_time >= 50000) {
       long countA = pulseCountA;
       long countB = pulseCountB;
@@ -309,43 +301,22 @@ void loop() {
       speed_lean = constrain(K_SPEED * speed_error + KI_SPEED * speed_integral + K_POS * (pos - pos_hold), -3.0, 3.0);
     }
 
-    
-  static unsigned long last_print = 0;
-  if (millis() - last_print >= 20) {
-    last_print = millis();
-    Serial.print("P:");     Serial.print(P);
-    Serial.print(",D:");    Serial.print(D);
-    Serial.print(",angle:"); Serial.print(newangle * 10);
-    Serial.print("speedlean:"); Serial.println(speed_lean * 10);
+
+
+
+    static unsigned long last_print = 0;
+    if (millis() - last_print >= 20) {
+      last_print = millis();
+      Serial.print("angle:");
+      Serial.print((newangle - setpoint) * 10);
+      Serial.print(",P:");
+      Serial.print(P);
+      Serial.print(",D:");
+      Serial.print(D);
+      Serial.print(",pid:");
+      Serial.print(pid_output);
+      Serial.print(",lean:");
+      Serial.println(speed_lean * 10);
+    }
   }
-
-    /*
-    int AIN1 = 25;
-    int AIN2 = 26;
-    int PWMA = 18;
-
-    int BIN1 = 32;
-    int BIN2 = 33;
-    int PWMB = 19;
-
-    */
-    /*
-    Serial.println("Angle: ");
-    
-    Serial.println(newangle);
-    
-    Serial.print(" | PID: ");
-    Serial.print(pid_output);
-    Serial.print(" | PWM: ");
-    Serial.println(motor_speed);
-    */
-    
-  }
-
-
-
-  
-
-  
 }
-
