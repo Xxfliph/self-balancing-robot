@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>balancebot control</title>
+<style>
+  :root {
+    --bg: #14181c;
+    --panel: #1d2329;
+    --line: #2e373f;
+    --text: #e8edf1;
+    --muted: #8a96a1;
+    --go: #3ddc97;
+    --back: #ffb347;
+    --off: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  main {
+    width: min(420px, 92vw);
+    padding: 28px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+  }
+  h1 { margin: 0 0 4px; font-size: 1.3rem; font-weight: 600; }
+  p { margin: 0 0 20px; color: var(--muted); font-size: 0.95rem; line-height: 1.4; }
+  #status { margin: 0 0 18px; font-size: 0.95rem; color: var(--off); }
+  #status.on { color: var(--go); }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    cursor: pointer;
+  }
+  button:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #connect { width: 100%; margin-bottom: 22px; }
+  .pad { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .pad button { font-size: 1.1rem; padding: 22px; }
+  #fwd.active { background: var(--go); color: #0b1a12; border-color: var(--go); }
+  #bwd.active { background: var(--back); color: #221506; border-color: var(--back); }
+  small { display: block; margin-top: 18px; color: var(--muted); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>balancebot control</h1>
+  <p>Hold a button, or hold W / S (or the up / down arrow), to drive. Release to stop.</p>
+  <div id="status">Not connected</div>
+  <button id="connect">Connect to balancebot</button>
+  <div class="pad">
+    <button id="fwd" disabled>Forward</button>
+    <button id="bwd" disabled>Backward</button>
+    <button id="stop" disabled>Stop</button>
+  </div>
+  <small>Needs Chrome or Edge with Bluetooth turned on.</small>
+</main>
+
+<script>
+const SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX_CHAR = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+
+const statusEl = document.getElementById("status");
+const connectBtn = document.getElementById("connect");
+const fwd = document.getElementById("fwd");
+const bwd = document.getElementById("bwd");
+const stopBtn = document.getElementById("stop");
+
+let rx = null;
+let current = "S";
+
+async function send(cmd) {
+  if (!rx || cmd === current) return;
+  current = cmd;
+  fwd.classList.toggle("active", cmd === "F");
+  bwd.classList.toggle("active", cmd === "B");
+  try {
+    await rx.writeValueWithoutResponse(new TextEncoder().encode(cmd));
+  } catch (e) {
+    statusEl.textContent = "Send failed: " + e.message;
+    statusEl.classList.remove("on");
+  }
+}
+
+function setConnected(on) {
+  statusEl.textContent = on ? "Connected to balancebot" : "Not connected";
+  statusEl.classList.toggle("on", on);
+  [fwd, bwd, stopBtn].forEach(b => b.disabled = !on);
+  connectBtn.textContent = on ? "Disconnect" : "Connect to balancebot";
+  if (!on) { rx = null; current = "S"; fwd.classList.remove("active"); bwd.classList.remove("active"); }
+}
+
+connectBtn.addEventListener("click", async () => {
+  if (rx) {
+    await send("S");
+    device.gatt.disconnect();
+    return;
+  }
+  if (!navigator.bluetooth) {
+    statusEl.textContent = "This browser has no Web Bluetooth. Use Chrome or Edge.";
+    return;
+  }
+  try {
+    statusEl.textContent = "Searching...";
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [SERVICE]
+    });
+    device.addEventListener("gattserverdisconnected", () => setConnected(false));
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    rx = await service.getCharacteristic(RX_CHAR);
+    setConnected(true);
+  } catch (e) {
+    setConnected(false);
+    statusEl.textContent = "Could not connect: " + e.message;
+  }
+});
+
+let device = null;
+
+function hold(btn, cmd) {
+  btn.addEventListener("pointerdown", () => send(cmd));
+  btn.addEventListener("pointerup", () => send("S"));
+  btn.addEventListener("pointerleave", () => send("S"));
+}
+hold(fwd, "F");
+hold(bwd, "B");
+stopBtn.addEventListener("click", () => send("S"));
+
+const keyMap = { w: "F", arrowup: "F", s: "B", arrowdown: "B" };
+window.addEventListener("keydown", e => {
+  const cmd = keyMap[e.key.toLowerCase()];
+  if (cmd && !e.repeat) { e.preventDefault(); send(cmd); }
+  if (e.key === " ") { e.preventDefault(); send("S"); }
+});
+window.addEventListener("keyup", e => {
+  if (keyMap[e.key.toLowerCase()]) send("S");
+});
+window.addEventListener("blur", () => send("S"));
+</script>
+</body>
+</html>
