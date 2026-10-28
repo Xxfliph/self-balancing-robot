@@ -76,13 +76,13 @@ The D term uses the gyro rate directly instead of differencing the angle, which 
 
 ### 3. Deadband compensation
 
-TT motors don't turn below roughly 30 PWM. The PID output magnitude $m$ is mapped through two joined straight lines so small commands still count, with no jump anywhere:
+TT motors don't turn below roughly 30 PWM. The PID output magnitude $m$ is mapped through two joined straight lines so small commands still count, with no jump anywhere. Here $P_{\min}$ is `MIN_PWM` (25) and $m_{\text{db}}$ is `DEAD_BAND` (13):
 
 $$
 \text{PWM}(m) =
 \begin{cases}
-m \cdot \dfrac{\text{MIN\_PWM}}{\text{DEAD\_BAND}} & m < \text{DEAD\_BAND} \\[2ex]
-\text{MIN\_PWM} + (m - \text{DEAD\_BAND})\,\dfrac{255 - \text{MIN\_PWM}}{255 - \text{DEAD\_BAND}} & \text{otherwise}
+m \cdot \dfrac{P_{\min}}{m_{\text{db}}} & m < m_{\text{db}} \\
+P_{\min} + (m - m_{\text{db}}) \cdot \dfrac{255 - P_{\min}}{255 - m_{\text{db}}} & \text{otherwise}
 \end{cases}
 $$
 
@@ -91,7 +91,7 @@ $$
 Wheel speed (encoder ticks per 50 ms, low-pass filtered) is compared with a ramped speed command:
 
 $$
-\theta_{\text{lean}} = \operatorname{clamp}\!\Big(K_s (v - v_{\text{cmd}}) + K_i \sum (v - v_{\text{cmd}}) + K_{\text{pos}} (n - n_{\text{hold}}),\ \pm 3^\circ\Big)
+\theta_{\text{lean}} = \mathrm{clamp}\Big(K_s (v - v_{\text{cmd}}) + K_i \sum (v - v_{\text{cmd}}) + K_{\text{pos}} (n - n_{\text{hold}}),\ \pm 3^\circ\Big)
 $$
 
 The integral limit is set in degrees of lean (`LEAN_I_MAX / KI_SPEED`) so it stays meaningful when the gain changes. The ramp prevents a lurch when a drive button is pressed.
